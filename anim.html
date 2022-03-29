@@ -1,0 +1,141 @@
+<script async src="https://ga.jspm.io/npm:es-module-shims@1.4.3/dist/es-module-shims.js" crossorigin="anonymous"></script>
+<script type='importmap-shim'>
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.138.3/build/three.module.js",
+      "three/": "https://unpkg.com/three@0.138.3/",
+      "omega/": "https://cdn.jsdelivr.net/gh/ycw/omega@0.0.2/",
+      "postprocessing/": "https://unpkg.com/postprocessing@6.26.0/"
+    }
+  }
+</script>
+<script defer type='module-shim'>
+import * as THREE from 'three'
+import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
+import { Strip, StripGeometry, StripHelper, UvPreset } from 'omega/dist/Strip.js'
+import * as PP from 'postprocessing/build/postprocessing.esm.js'
+
+// ----
+// main
+// ----
+
+const renderer = new THREE.WebGLRenderer();
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(75, 2, .1, 100);
+const controls = new OrbitControls(camera, renderer.domElement);
+
+scene.background = new THREE.Color('white');
+controls.target.set(0, .8, 0);
+camera.position.set(1, 1, .8);
+controls.autoRotate = true;
+controls.enableDamping = true;
+renderer.shadowMap.enabled = true;
+
+const light = new THREE.DirectionalLight('white', 1);
+light.position.set(2, 2, 1);
+scene.add(light);
+light.castShadow = true;
+light.shadow.bias = -0.0001;
+scene.add(new THREE.AmbientLight('white', 1));
+
+const N_SEG = 20;
+const BREADTH = .5;
+const curve = new THREE.CatmullRomCurve3([
+  new THREE.Vector3(0, 1, 0),
+  new THREE.Vector3(0, 0, 0),
+  new THREE.Vector3(0, -1, 0),
+  new THREE.Vector3(0, -2, 0),
+], false);
+const radius_fn = (i, I) => .2 + 1.5 * i / I;
+const tilt_fn = (i, I) => 5 * Math.PI * i / I + Math.PI * .5;
+const strip = new Strip(curve, radius_fn, tilt_fn);
+const frames = strip.computeFrames(N_SEG);
+const strip_geom = new StripGeometry(strip, N_SEG);
+// scene.add(new StripHelper(strip, N_SEG));
+
+
+function f(strip_geom, radius_fn, frames, result) { // random pos lying on strip
+  const ab_pos = strip_geom.getAttribute('position').array;
+  const n_idx = ab_pos.length / 6; // /3/2
+  const idx = Math.random() * n_idx | 0;
+  const pa = new THREE.Vector3(...ab_pos.subarray(idx * 6, idx * 6 + 3));
+  const pb = new THREE.Vector3(...ab_pos.subarray(idx * 6 + 3, idx * 6 + 6));
+  const pa2pb = new THREE.Vector3().subVectors(pb, pa);
+  const len = 2 * radius_fn(idx, n_idx);
+  pa2pb.normalize().multiplyScalar(len * Math.random());
+  pa.add(pa2pb);
+  const [B, N, T] = frames[idx];
+  result.makeBasis(B, N, T).setPosition(pa);
+}
+
+// texture by Lena Albers - https://unsplash.com/photos/px-JsA27fbQ
+const url = 'https://images.unsplash.com/photo-1628071616999-0660c371c465?ixlib=rb-1.2.1&ixid=MnwxMjA3fDB8MHxlZGl0b3JpYWwtZmVlZHw4MXx8fGVufDB8fHx8&auto=format&fit=crop&w=500&q=60';
+const tex = new THREE.TextureLoader().load(url);
+{ // https://codepen.io/ycw/pen/KKZgPyB
+  const N_INST = 1000;
+  const strip = new Strip(new THREE.CatmullRomCurve3([
+    new THREE.Vector3(.2, .2, 0),
+    new THREE.Vector3(.4, .5, 0),
+    new THREE.Vector3(.4, .1, 0),
+    new THREE.Vector3(0, 0, 0),
+  ]), (i, I) => .5 * (i / I), (i, I) => Math.PI * 0.4 * i / I);
+  const geom = new StripGeometry(strip, 32, UvPreset.strip[0]);
+  const mat = new THREE.MeshPhysicalMaterial({ map: tex, side: THREE.DoubleSide, roughness: 1, alphaMap: tex, alphaTest: .2 });
+  const mesh = new THREE.InstancedMesh(geom, mat, N_INST);
+  const $mat_basis = new THREE.Matrix4();
+  const $mat_r = new THREE.Matrix4(); // ry
+  const $mat_s = new THREE.Matrix4(); // scale
+  const $col = new THREE.Color();
+  for (let i = 0; i < N_INST; ++i) {
+    $mat_r.makeRotationY(Math.PI * Math.random() * 2);
+    $mat_s.makeScale(Math.random(), Math.random(), Math.random());
+    f(strip_geom, radius_fn, frames, $mat_basis);
+    mesh.setMatrixAt(i, $mat_basis.multiply($mat_r).multiply($mat_s));
+    mesh.setColorAt(i, $col.setHSL(Math.random(), .5, .5 + .5 * Math.random()));
+  }
+  scene.add(mesh);
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+}
+
+{
+  const geom = new THREE.CylinderGeometry(.1, .1, 2.6);
+  const mat = new THREE.MeshPhysicalMaterial({ roughness: 1, map: tex, color: '#222' });
+  const mesh = new THREE.Mesh(geom, mat);
+  scene.add(mesh);
+}
+
+// ----
+// render
+// ----
+
+const composer = new PP.EffectComposer(renderer);
+composer.addPass(new PP.RenderPass(scene, camera));
+composer.addPass(new PP.EffectPass(
+  camera,
+  new PP.BrightnessContrastEffect({ contrast: +.5 }),
+  new PP.BloomEffect({
+    luminanceThreshold: .1,
+    intensity: 1
+  })
+));
+
+renderer.setAnimationLoop((t) => {
+  composer.render();
+  controls.update();
+  tex.offset.y = -1 + Math.min(t * 0.00033, 2)/2;
+});
+
+// ----
+// view
+// ----
+
+function resize(w, h, dpr = devicePixelRatio) {
+  composer.setSize(w, h);
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+}
+addEventListener('resize', () => resize(innerWidth, innerHeight));
+dispatchEvent(new Event('resize'));
+document.body.prepend(renderer.domElement);
+</script>
